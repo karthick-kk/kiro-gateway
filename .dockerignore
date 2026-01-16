@@ -1,0 +1,10 @@
+.env
+.git
+__pycache__
+*.pyc
+*.pyo
+debug_logs/
+*.log
+.venv
+venv
+test_fresh.py

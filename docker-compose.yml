@@ -1,0 +1,16 @@
+services:
+  kiro-gateway:
+    image: ghcr.io/karthick-kk/kiro-gateway:latest
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount your LOCAL kiro-cli data (you must login on host first)
+      - ~/.local/share/kiro-cli:/data/kiro-cli:rw
+    environment:
+      - PROXY_API_KEY=${PROXY_API_KEY:-your-api-key}
+      - KIRO_CLI_DB_FILE=/data/kiro-cli/data.sqlite3
+      - KIRO_REGION=${KIRO_REGION:-eu-central-1}
+      - USE_KIRO_CLI_TOKEN=true
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
