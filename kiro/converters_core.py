@@ -1246,3 +1246,155 @@ def build_kiro_payload(
         payload["profileArn"] = profile_arn
     
     return KiroPayloadResult(payload=payload, tool_documentation=tool_documentation)
+
+
+# ==================================================================================================
+# Q Developer SendMessage Format
+# ==================================================================================================
+
+def build_qdeveloper_payload(
+    messages: List[UnifiedMessage],
+    system_prompt: str,
+    model_id: str,
+    tools: Optional[List[UnifiedTool]],
+    conversation_id: str,
+    inject_thinking: bool = True
+) -> KiroPayloadResult:
+    """
+    Builds payload for Q Developer SendMessage API.
+    
+    Q Developer uses a different format than CodeWhisperer:
+    - conversationId (top-level, optional)
+    - userInputMessage (top-level)
+    - history (top-level, optional)
+    
+    Args:
+        messages: List of messages in unified format
+        system_prompt: System prompt
+        model_id: Model ID
+        tools: List of tools
+        conversation_id: Conversation ID
+        inject_thinking: Whether to inject thinking tags
+    
+    Returns:
+        KiroPayloadResult with Q Developer format payload
+    """
+    # Process tools with long descriptions
+    processed_tools, tool_documentation = process_tools_with_long_descriptions(tools)
+    
+    # Add tool documentation to system prompt if present
+    full_system_prompt = system_prompt
+    if tool_documentation:
+        full_system_prompt = full_system_prompt + tool_documentation if full_system_prompt else tool_documentation.strip()
+    
+    # Add thinking mode legitimization to system prompt if enabled
+    thinking_system_addition = get_thinking_system_prompt_addition()
+    if thinking_system_addition:
+        full_system_prompt = full_system_prompt + thinking_system_addition if full_system_prompt else thinking_system_addition.strip()
+    
+    # Strip tool content if no tools defined
+    if not tools:
+        messages_without_tools, _ = strip_all_tool_content(messages)
+        messages_with_assistants = messages_without_tools
+    else:
+        messages_with_assistants, _ = ensure_assistant_before_tool_results(messages)
+    
+    # Merge adjacent messages
+    merged_messages = merge_adjacent_messages(messages_with_assistants)
+    
+    if not merged_messages:
+        raise ValueError("No messages to send")
+    
+    # Build history (all messages except the last one)
+    history = []
+    for msg in merged_messages[:-1]:
+        content = extract_text_content(msg.content)
+        if msg.role == "user":
+            history.append({
+                "userInputMessage": {
+                    "content": content
+                }
+            })
+        elif msg.role == "assistant":
+            history.append({
+                "assistantResponseMessage": {
+                    "content": content
+                }
+            })
+    
+    # Current message (the last one)
+    current_message = merged_messages[-1]
+    current_content = extract_text_content(current_message.content)
+    
+    # If system prompt exists and no history - add to current message
+    if full_system_prompt:
+        if not history:
+            current_content = f"{full_system_prompt}\n\n{current_content}"
+        else:
+            # Add to first user message in history
+            if history and "userInputMessage" in history[0]:
+                original = history[0]["userInputMessage"]["content"]
+                history[0]["userInputMessage"]["content"] = f"{full_system_prompt}\n\n{original}"
+    
+    # Handle assistant as last message
+    if current_message.role == "assistant":
+        history.append({
+            "assistantResponseMessage": {
+                "content": current_content
+            }
+        })
+        current_content = "Continue"
+    
+    if not current_content:
+        current_content = "Continue"
+    
+    # Inject thinking tags
+    if inject_thinking and current_message.role == "user":
+        current_content = inject_thinking_tags(current_content)
+    
+    # Build userInputMessage
+    user_input_message: Dict[str, Any] = {
+        "content": current_content,
+    }
+    
+    # Build userInputMessageContext
+    user_input_context: Dict[str, Any] = {
+        "userSettings": {
+            "hasConsentedToCrossRegionCalls": True
+        }
+    }
+    
+    # Add tools if present
+    kiro_tools = convert_tools_to_kiro_format(processed_tools)
+    if kiro_tools:
+        user_input_context["tools"] = kiro_tools
+    
+    # Add tool results if present
+    if current_message.tool_results:
+        kiro_tool_results = convert_tool_results_to_kiro_format(current_message.tool_results)
+        if kiro_tool_results:
+            user_input_context["toolResults"] = kiro_tool_results
+    
+    user_input_message["userInputMessageContext"] = user_input_context
+    
+    # Process images
+    images = current_message.images or extract_images_from_content(current_message.content)
+    if images:
+        kiro_images = convert_images_to_kiro_format(images)
+        if kiro_images:
+            user_input_message["images"] = kiro_images
+    
+    # Assemble Q Developer payload
+    payload: Dict[str, Any] = {
+        "userInputMessage": user_input_message,
+    }
+    
+    # Add conversationId if provided
+    if conversation_id:
+        payload["conversationId"] = conversation_id
+    
+    # Add history if not empty
+    if history:
+        payload["history"] = history
+    
+    return KiroPayloadResult(payload=payload, tool_documentation=tool_documentation)

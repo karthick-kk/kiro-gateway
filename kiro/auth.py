@@ -33,17 +33,17 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from loguru import logger
 
 from kiro.config import (
-    TOKEN_REFRESH_THRESHOLD,
     get_kiro_refresh_url,
     get_kiro_api_host,
     get_kiro_q_host,
-    get_aws_sso_oidc_url,
+    get_aws_sso_oidc_url_for_region,
+    TOKEN_REFRESH_THRESHOLD,
 )
 from kiro.utils import get_machine_fingerprint
 
@@ -133,6 +133,7 @@ class KiroAuthManager:
         self._client_secret: Optional[str] = client_secret
         self._scopes: Optional[list] = None  # OAuth scopes for AWS SSO OIDC
         self._sso_region: Optional[str] = None  # SSO region for OIDC token refresh (may differ from API region)
+        self._use_kiro_cli_token: bool = False  # Flag to skip OIDC refresh
         
         self._access_token: Optional[str] = None
         self._expires_at: Optional[datetime] = None
@@ -144,7 +145,9 @@ class KiroAuthManager:
         # Dynamic URLs based on region
         self._refresh_url = get_kiro_refresh_url(region)
         self._api_host = get_kiro_api_host(region)
-        self._q_host = get_kiro_q_host(region)
+        # Q Developer API for model listing is available in eu-central-1
+        # CodeWhisperer API for chat is available in us-east-1
+        self._q_host = get_kiro_q_host("eu-central-1")
         
         # Fingerprint for User-Agent
         self._fingerprint = get_machine_fingerprint()
@@ -155,6 +158,13 @@ class KiroAuthManager:
         # Load credentials from JSON file if specified
         elif creds_file:
             self._load_credentials_from_file(creds_file)
+        
+        # Check if we should use kiro-cli's current access token directly
+        from kiro.config import USE_KIRO_CLI_TOKEN
+        if sqlite_db and USE_KIRO_CLI_TOKEN and self._access_token:
+            logger.info("Using kiro-cli's current access token directly (bypassing OIDC refresh)")
+            self._auth_type = AuthType.AWS_SSO_OIDC  # Still mark as OIDC for compatibility
+            self._use_kiro_cli_token = True  # Flag to skip refresh
         
         # Determine auth type based on available credentials
         self._detect_auth_type()
@@ -300,7 +310,8 @@ class KiroAuthManager:
                 # Update URLs for new region
                 self._refresh_url = get_kiro_refresh_url(self._region)
                 self._api_host = get_kiro_api_host(self._region)
-                self._q_host = get_kiro_q_host(self._region)
+                # Q Developer API only works in eu-central-1
+                self._q_host = get_kiro_q_host("eu-central-1")
             
             # Load AWS SSO OIDC specific fields
             if 'clientId' in data:
@@ -523,7 +534,7 @@ class KiroAuthManager:
         # AWS SSO OIDC uses form-urlencoded data
         # Use SSO region for OIDC endpoint (may differ from API region)
         sso_region = self._sso_region or self._region
-        url = get_aws_sso_oidc_url(sso_region)
+        url = get_aws_sso_oidc_url_for_region(sso_region)
         data = {
             "grant_type": "refresh_token",
             "client_id": self._client_id,
@@ -605,6 +616,11 @@ class KiroAuthManager:
             if self._access_token and not self.is_token_expiring_soon():
                 return self._access_token
             
+            # Skip refresh if using kiro-cli token directly
+            if hasattr(self, '_use_kiro_cli_token') and self._use_kiro_cli_token:
+                logger.debug("Using kiro-cli access token, skipping refresh")
+                return self._access_token
+                
             # SQLite mode: reload credentials first, kiro-cli might have updated them
             if self._sqlite_db and self.is_token_expiring_soon():
                 logger.debug("SQLite mode: reloading credentials before refresh attempt")
@@ -654,10 +670,29 @@ class KiroAuthManager:
         
         Used when receiving a 403 error from the API.
         
+        For kiro-cli token mode (USE_KIRO_CLI_TOKEN=true):
+        - Reloads credentials from SQLite (kiro-cli may have refreshed them)
+        - Returns reloaded token without attempting OIDC refresh
+        
         Returns:
             New access token
+            
+        Raises:
+            ValueError: If token refresh fails and no valid token available
         """
         async with self._lock:
+            # For kiro-cli token mode, reload from SQLite instead of OIDC refresh
+            if hasattr(self, '_use_kiro_cli_token') and self._use_kiro_cli_token and self._sqlite_db:
+                logger.info("Reloading credentials from SQLite (kiro-cli token mode)...")
+                self._load_credentials_from_sqlite(self._sqlite_db)
+                if self._access_token:
+                    logger.info("Credentials reloaded from SQLite")
+                    return self._access_token
+                raise ValueError(
+                    "Failed to reload credentials from SQLite. "
+                    "Please run 'kiro-cli login' to refresh your credentials."
+                )
+            
             await self._refresh_token_request()
             return self._access_token
     

@@ -92,6 +92,7 @@ class KiroHttpClient:
         self._shared_client = shared_client
         self._owns_client = shared_client is None
         self.client: Optional[httpx.AsyncClient] = shared_client
+        self._auth_manager = auth_manager  # Store for SSL verification check
     
     async def _get_client(self, stream: bool = False) -> httpx.AsyncClient:
         """
@@ -164,13 +165,14 @@ class KiroHttpClient:
                 # Log but don't propagate - we're in cleanup code
                 # Propagating here could mask the original exception
                 logger.warning(f"Error closing HTTP client: {e}")
-    
+
     async def request_with_retry(
         self,
         method: str,
         url: str,
         json_data: dict,
-        stream: bool = False
+        stream: bool = False,
+        headers: Optional[dict] = None
     ) -> httpx.Response:
         """
         Executes an HTTP request with retry logic.
@@ -181,14 +183,12 @@ class KiroHttpClient:
         - 5xx: waits with exponential backoff
         - Timeouts: waits with exponential backoff
         
-        For streaming, STREAMING_READ_TIMEOUT is used for waiting between chunks.
-        First token timeout is controlled separately in streaming_openai.py via asyncio.wait_for().
-        
         Args:
             method: HTTP method (GET, POST, etc.)
             url: Request URL
             json_data: Request body (JSON)
             stream: Use streaming (default False)
+            headers: Optional custom headers (merged with default Kiro headers)
         
         Returns:
             httpx.Response with successful response
@@ -196,83 +196,57 @@ class KiroHttpClient:
         Raises:
             HTTPException: On failure after all attempts (502/504)
         """
-        # Determine the number of retry attempts
-        # FIRST_TOKEN_TIMEOUT is used in streaming_openai.py, not here
         max_retries = FIRST_TOKEN_MAX_RETRIES if stream else MAX_RETRIES
-        
         client = await self._get_client(stream=stream)
         last_error = None
         
         for attempt in range(max_retries):
             try:
-                # Get current token
+                # Get current token and build headers
                 token = await self.auth_manager.get_access_token()
-                headers = get_kiro_headers(self.auth_manager, token)
+                request_headers = get_kiro_headers(self.auth_manager, token)
+                if headers:
+                    request_headers.update(headers)
                 
                 if stream:
-                    # Prevent CLOSE_WAIT connection leak (issue #38)
-                    headers["Connection"] = "close"
-                    req = client.build_request(method, url, json=json_data, headers=headers)
-                    logger.debug("Sending request to Kiro API...")
+                    request_headers["Connection"] = "close"
+                    req = client.build_request(method, url, json=json_data, headers=request_headers)
+                    logger.debug(f"Sending request to Kiro API... URL: {url}")
                     response = await client.send(req, stream=True)
                 else:
-                    logger.debug("Sending request to Kiro API...")
-                    response = await client.request(method, url, json=json_data, headers=headers)
+                    logger.debug(f"Sending request to Kiro API... URL: {url}")
+                    response = await client.request(method, url, json=json_data, headers=request_headers)
                 
-                # Check status
                 if response.status_code == 200:
                     return response
                 
-                # 403 - token expired, refresh and retry
                 if response.status_code == 403:
-                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{MAX_RETRIES})")
+                    logger.warning(f"Received 403, refreshing token (attempt {attempt + 1}/{max_retries})")
                     await self.auth_manager.force_refresh()
                     continue
                 
-                # 429 - rate limit, wait and retry
                 if response.status_code == 429:
                     delay = BASE_RETRY_DELAY * (2 ** attempt)
-                    logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    logger.warning(f"Received 429, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                     continue
                 
-                # 5xx - server error, wait and retry
                 if 500 <= response.status_code < 600:
                     delay = BASE_RETRY_DELAY * (2 ** attempt)
-                    logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                    logger.warning(f"Received {response.status_code}, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                     continue
                 
-                # Other errors - return as is
                 return response
                 
             except httpx.TimeoutException as e:
                 last_error = e
-                # Determine timeout type for logging
                 timeout_type = type(e).__name__
-                
                 if stream:
-                    # For streaming this could be:
-                    # - ConnectTimeout: TCP connection issue
-                    # - ReadTimeout: server not responding (STREAMING_READ_TIMEOUT)
-                    if isinstance(e, httpx.ConnectTimeout):
-                        logger.warning(
-                            f"[{timeout_type}] Connection timeout (attempt {attempt + 1}/{max_retries})"
-                        )
-                    elif isinstance(e, httpx.ReadTimeout):
-                        logger.warning(
-                            f"[{timeout_type}] Read timeout after {STREAMING_READ_TIMEOUT}s - "
-                            f"server stopped responding (attempt {attempt + 1}/{max_retries})"
-                        )
-                    else:
-                        logger.warning(
-                            f"[{timeout_type}] Timeout during streaming (attempt {attempt + 1}/{max_retries})"
-                        )
+                    logger.warning(f"[{timeout_type}] Timeout during streaming (attempt {attempt + 1}/{max_retries})")
                 else:
                     delay = BASE_RETRY_DELAY * (2 ** attempt)
-                    logger.warning(
-                        f"[{timeout_type}] Request timeout, waiting {delay}s (attempt {attempt + 1}/{max_retries})"
-                    )
+                    logger.warning(f"[{timeout_type}] Request timeout, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                     await asyncio.sleep(delay)
                 
             except httpx.RequestError as e:
@@ -281,7 +255,6 @@ class KiroHttpClient:
                 logger.warning(f"Request error: {e}, waiting {delay}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(delay)
         
-        # All attempts exhausted
         if stream:
             raise HTTPException(
                 status_code=504,

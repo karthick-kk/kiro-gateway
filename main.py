@@ -301,11 +301,13 @@ async def lifespan(app: FastAPI):
         write=30.0,
         pool=30.0
     )
+    # Create shared HTTP client with connection pooling
     app.state.http_client = httpx.AsyncClient(
         limits=limits,
         timeout=timeout,
         follow_redirects=True
     )
+    logger.info("Shared HTTP client created with connection pooling")
     logger.info("Shared HTTP client created with connection pooling")
     
     # Create AuthManager

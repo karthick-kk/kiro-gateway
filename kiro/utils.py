@@ -57,31 +57,53 @@ def get_machine_fingerprint() -> str:
         return hashlib.sha256(b"default-kiro-gateway").hexdigest()
 
 
-def get_kiro_headers(auth_manager: "KiroAuthManager", token: str) -> dict:
+def get_kiro_headers(auth_manager: "KiroAuthManager", token: str, target: str = None) -> dict:
     """
-    Builds headers for Kiro API requests.
-    
-    Includes all necessary headers for authentication and identification:
-    - Authorization with Bearer token
-    - User-Agent with fingerprint
-    - AWS CodeWhisperer specific headers
+    Builds headers for Q Developer API requests (AWS JSON protocol).
     
     Args:
         auth_manager: Authentication manager for obtaining fingerprint
         token: Access token for authorization
+        target: Optional AWS service target (e.g., "AmazonCodeWhispererStreamingService.GenerateAssistantResponse")
     
     Returns:
         Dictionary with headers for HTTP request
     """
     fingerprint = auth_manager.fingerprint
     
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/x-amz-json-1.0",
+        # Match kiro-cli User-Agent exactly
+        "User-Agent": "AmazonQ-For-CLI/1.23.1",
+        "x-amz-user-agent": f"aws-sdk-rust/1.0.0 kiro-gateway-{fingerprint[:8]}",
+        "x-amzn-codewhisperer-optout": "false",
+        "amz-sdk-invocation-id": str(uuid.uuid4()),
+        "amz-sdk-request": "attempt=1; max=3",
+    }
+    
+    if target:
+        headers["x-amz-target"] = target
+    
+    return headers
+
+
+def get_q_api_headers(token: str, target: str) -> dict:
+    """
+    Builds headers for Q Developer API with x-amz-target.
+    
+    Args:
+        token: Access token for authorization
+        target: AWS service target (e.g., "AmazonCodeWhispererService.GenerateCompletions")
+    
+    Returns:
+        Dictionary with headers for AWS JSON protocol request
+    """
     return {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": f"aws-sdk-js/1.0.27 ua/2.1 os/win32#10.0.19044 lang/js md/nodejs#22.21.1 api/codewhispererstreaming#1.0.27 m/E KiroIDE-0.7.45-{fingerprint}",
-        "x-amz-user-agent": f"aws-sdk-js/1.0.27 KiroIDE-0.7.45-{fingerprint}",
-        "x-amzn-codewhisperer-optout": "true",
-        "x-amzn-kiro-agent-mode": "vibe",
+        "Content-Type": "application/x-amz-json-1.0",
+        "x-amz-target": target,
+        "User-Agent": "aws-sdk-rust/1.0.0 os/linux lang/rust md/kiro-cli",
         "amz-sdk-invocation-id": str(uuid.uuid4()),
         "amz-sdk-request": "attempt=1; max=3",
     }

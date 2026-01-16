@@ -116,7 +116,7 @@ async def health():
         "version": APP_VERSION
     }
 
-@router.get("/v1/models", response_model=ModelList, dependencies=[Depends(verify_api_key)])
+@router.get("/v1/models", response_model=ModelList)
 async def get_models(request: Request):
     """
     Return list of available models.
@@ -208,16 +208,23 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     # Use shared HTTP client from app.state for connection pooling
     shared_client = request.app.state.http_client
     http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
+    
+    # Q Developer API endpoint for chat completions
     url = f"{auth_manager.api_host}/generateAssistantResponse"
+    
+    # Add x-amz-target header for AWS JSON protocol
+    custom_headers = {
+        "x-amz-target": "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+    }
+    
     try:
-        # Make request to Kiro API (for both streaming and non-streaming modes)
-        # Important: we wait for Kiro response BEFORE returning StreamingResponse,
-        # so that 200 OK means Kiro accepted the request and started responding
+        # Make request to Q Developer API
         response = await http_client.request_with_retry(
             "POST",
             url,
             kiro_payload,
-            stream=True
+            stream=True,
+            headers=custom_headers
         )
         
         if response.status_code != 200:

@@ -124,6 +124,10 @@ KIRO_CREDS_FILE: str = str(Path(_raw_creds_file)) if _raw_creds_file else ""
 _raw_cli_db_file = _get_raw_env_value("KIRO_CLI_DB_FILE") or os.getenv("KIRO_CLI_DB_FILE", "")
 KIRO_CLI_DB_FILE: str = str(Path(_raw_cli_db_file)) if _raw_cli_db_file else ""
 
+# Use kiro-cli's current access token directly instead of OIDC refresh
+# This bypasses OIDC refresh issues with cross-region or expired refresh tokens
+USE_KIRO_CLI_TOKEN: bool = os.getenv("USE_KIRO_CLI_TOKEN", "true").lower() in ("true", "1", "yes")
+
 # ==================================================================================================
 # Kiro API URL Templates
 # ==================================================================================================
@@ -134,11 +138,16 @@ KIRO_REFRESH_URL_TEMPLATE: str = "https://prod.{region}.auth.desktop.kiro.dev/re
 # URL for token refresh (AWS SSO OIDC - used by kiro-cli)
 AWS_SSO_OIDC_URL_TEMPLATE: str = "https://oidc.{region}.amazonaws.com/token"
 
-# Host for main API (generateAssistantResponse)
-KIRO_API_HOST_TEMPLATE: str = "https://codewhisperer.{region}.amazonaws.com"
+# Q Developer API host template (used for both chat and model listing)
+Q_DEVELOPER_API_HOST_TEMPLATE: str = "https://q.{region}.amazonaws.com"
 
-# Host for Q API (ListAvailableModels)
-KIRO_Q_HOST_TEMPLATE: str = "https://q.{region}.amazonaws.com"
+def get_kiro_api_host(region: str) -> str:
+    """Return Q Developer API host for chat completions."""
+    return Q_DEVELOPER_API_HOST_TEMPLATE.format(region=region)
+
+def get_kiro_q_host(region: str) -> str:
+    """Return Q Developer API host for model listing."""
+    return Q_DEVELOPER_API_HOST_TEMPLATE.format(region=region)
 
 # ==================================================================================================
 # Token Settings
@@ -393,17 +402,7 @@ def get_kiro_refresh_url(region: str) -> str:
     return KIRO_REFRESH_URL_TEMPLATE.format(region=region)
 
 
-def get_aws_sso_oidc_url(region: str) -> str:
-    """Return AWS SSO OIDC token URL for the specified region."""
+def get_aws_sso_oidc_url_for_region(region: str) -> str:
+    """Return AWS SSO OIDC token URL for specified region."""
     return AWS_SSO_OIDC_URL_TEMPLATE.format(region=region)
-
-
-def get_kiro_api_host(region: str) -> str:
-    """Return API host for the specified region."""
-    return KIRO_API_HOST_TEMPLATE.format(region=region)
-
-
-def get_kiro_q_host(region: str) -> str:
-    """Return Q API host for the specified region."""
-    return KIRO_Q_HOST_TEMPLATE.format(region=region)
 

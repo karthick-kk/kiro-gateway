@@ -191,7 +191,14 @@ async def messages(
     # Create HTTP client with retry logic
     shared_client = request.app.state.http_client
     http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
+    
+    # Q Developer API endpoint for chat completions
     url = f"{auth_manager.api_host}/generateAssistantResponse"
+    
+    # Add x-amz-target header for AWS JSON protocol
+    custom_headers = {
+        "x-amz-target": "AmazonCodeWhispererStreamingService.GenerateAssistantResponse"
+    }
     
     # Prepare data for token counting
     # Convert Pydantic models to dicts for tokenizer
@@ -199,14 +206,13 @@ async def messages(
     tools_for_tokenizer = [tool.model_dump() for tool in request_data.tools] if request_data.tools else None
     
     try:
-        # Make request to Kiro API (for both streaming and non-streaming modes)
-        # Important: we wait for Kiro response BEFORE returning StreamingResponse,
-        # so that we can return proper HTTP error codes if Kiro fails
+        # Make request to Q Developer API
         response = await http_client.request_with_retry(
             "POST",
             url,
             kiro_payload,
-            stream=True
+            stream=True,
+            headers=custom_headers
         )
         
         if response.status_code != 200:

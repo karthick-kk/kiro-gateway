@@ -44,6 +44,7 @@ from kiro.converters_core import (
     UnifiedMessage,
     UnifiedTool,
     build_kiro_payload as core_build_kiro_payload,
+    build_qdeveloper_payload,
 )
 
 
@@ -237,18 +238,20 @@ def convert_openai_tools_to_unified(tools: Optional[List[Tool]]) -> Optional[Lis
 def build_kiro_payload(
     request_data: ChatCompletionRequest,
     conversation_id: str,
-    profile_arn: str
+    profile_arn: str,
+    use_qdeveloper_format: bool = False
 ) -> dict:
     """
     Builds complete payload for Kiro API from OpenAI request.
     
     This is the main entry point for OpenAI → Kiro conversion.
-    Uses the core build_kiro_payload function with OpenAI-specific adapters.
+    Supports both CodeWhisperer and Q Developer API formats.
     
     Args:
         request_data: Request in OpenAI format
         conversation_id: Unique conversation ID
         profile_arn: AWS CodeWhisperer profile ARN
+        use_qdeveloper_format: Use Q Developer SendMessage format (default False - uses CodeWhisperer)
     
     Returns:
         Payload dictionary for POST request to Kiro API
@@ -272,15 +275,26 @@ def build_kiro_payload(
         f"system_prompt_length={len(system_prompt)}"
     )
     
-    # Use core function to build payload
-    result = core_build_kiro_payload(
-        messages=unified_messages,
-        system_prompt=system_prompt,
-        model_id=model_id,
-        tools=unified_tools,
-        conversation_id=conversation_id,
-        profile_arn=profile_arn,
-        inject_thinking=True
-    )
+    if use_qdeveloper_format:
+        # Use Q Developer SendMessage format
+        result = build_qdeveloper_payload(
+            messages=unified_messages,
+            system_prompt=system_prompt,
+            model_id=model_id,
+            tools=unified_tools,
+            conversation_id=conversation_id,
+            inject_thinking=True
+        )
+    else:
+        # Use CodeWhisperer GenerateAssistantResponse format
+        result = core_build_kiro_payload(
+            messages=unified_messages,
+            system_prompt=system_prompt,
+            model_id=model_id,
+            tools=unified_tools,
+            conversation_id=conversation_id,
+            profile_arn=profile_arn,
+            inject_thinking=True
+        )
     
     return result.payload
