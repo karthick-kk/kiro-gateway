@@ -273,7 +273,10 @@ class KiroAuthManager:
                 logger.warning(f"SQLite database not found: {db_path}")
                 return
             
-            conn = sqlite3.connect(str(path))
+            # Use read-only mode with immutable flag to avoid locking issues
+            # when the database is being used by kiro-cli on the host
+            uri = f"file:{path}?mode=ro&immutable=1"
+            conn = sqlite3.connect(uri, uri=True)
             cursor = conn.cursor()
             
             # Try all possible token keys in priority order
