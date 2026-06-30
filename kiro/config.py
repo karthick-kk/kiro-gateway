@@ -184,6 +184,12 @@ KIRO_API_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 # Host for Q API (ListAvailableModels)
 KIRO_Q_HOST_TEMPLATE: str = "https://runtime.{region}.kiro.dev"
 
+# Host for control-plane / management API (Get-Usage-Limits)
+# Region MUST come from the profileArn (e.g. eu-central-1), which may differ
+# from the token/SSO region. Verified: management.{region}.kiro.dev serves
+# GET /Get-Usage-Limits with a plain Bearer token.
+KIRO_MANAGEMENT_HOST_TEMPLATE: str = "https://management.{region}.kiro.dev"
+
 # ==================================================================================================
 # Token Settings
 # ==================================================================================================

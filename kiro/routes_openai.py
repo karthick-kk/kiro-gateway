@@ -51,6 +51,7 @@ from kiro.converters_openai import build_kiro_payload
 from kiro.streaming_openai import stream_kiro_to_openai, collect_stream_response, stream_with_first_token_retry
 from kiro.http_client import KiroHttpClient
 from kiro.utils import generate_conversation_id
+from kiro.kiro_usage import fetch_usage
 from kiro.config import WEB_SEARCH_ENABLED
 from kiro.mcp_tools import handle_native_web_search
 
@@ -118,6 +119,38 @@ async def health():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": APP_VERSION
     }
+
+
+@router.get("/v1/usage", dependencies=[Depends(verify_api_key)])
+@router.get("/usage", dependencies=[Depends(verify_api_key)])
+async def get_usage(request: Request):
+    """
+    Return current Kiro credits/usage for the active account.
+
+    Mirrors the data shown by `kiro-cli`'s `/usage` slash command, but fetched
+    directly via the control-plane endpoint using the gateway's already-managed
+    auth (no kiro-cli subprocess, no extra token refresher).
+
+    Returns:
+        JSON: {used, total, percentage, reset_date, plan_name, overages}
+    """
+    logger.info("Request to /usage")
+
+    account = request.app.state.account_manager.get_first_account()
+    if not account or not account.auth_manager:
+        raise HTTPException(503, "No initialized accounts available")
+
+    try:
+        usage = await fetch_usage(
+            account.auth_manager,
+            request.app.state.http_client,
+        )
+        return JSONResponse(content=usage)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to fetch usage: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to fetch usage: {e}")
 
 @router.get("/v1/models", response_model=ModelList, dependencies=[Depends(verify_api_key)])
 async def get_models(request: Request):
